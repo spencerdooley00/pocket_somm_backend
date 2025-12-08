@@ -1,0 +1,41 @@
+wine_id,name,producer,country,region,appellation,color,grapes,vintage
+1,Barolo Castiglione,Vietti,Italy,Piedmont,Barolo,red,Nebbiolo,2018
+2,Barbaresco,Produttori del Barbaresco,Italy,Piedmont,Barbaresco,red,Nebbiolo,2019
+3,Langhe Nebbiolo,GD Vajra,Italy,Piedmont,Langhe,red,Nebbiolo,2021
+4,Chianti Classico,Fontodi,Italy,Tuscany,Chianti Classico,red,Sangiovese,2019
+5,Chianti Classico Riserva,Castello di Ama,Italy,Tuscany,Chianti Classico,red,Sangiovese,2018
+6,Brunello di Montalcino,Le Ragnaie,Italy,Tuscany,Brunello di Montalcino,red,Sangiovese,2016
+7,Montepulciano dAbruzzo,Valentini,Italy,Abruzzo,Montepulciano dAbruzzo,red,Montepulciano,2019
+8,Etna Rosso,Graci,Italy,Sicily,Etna Rosso,red,Nerello Mascalese,2020
+9,Valpolicella Classico,Allegrini,Italy,Veneto,Valpolicella,red,Corvina Blend,2020
+10,Amarone della Valpolicella,Allegrini,Italy,Veneto,Amarone,red,Corvina Blend,2017
+11,Douro Tinto,Quinta do Crasto,Portugal,Douro,Douro,red,Portuguese Field Blend,2019
+12,Vinho Tinto Reserva,Quinta dos Roques,Portugal,Dao,Dao,red,Jaen Blend,2018
+13,Baga Vinhas Velhas,Filipa Pato,Portugal,Bairrada,Bairrada,red,Baga,2019
+14,Alentejo Tinto,Cartuxa,Portugal,Alentejo,Alentejo,red,Aragonez Blend,2020
+15,Beaujolais Villages,Marcel Lapierre,France,Beaujolais,Beaujolais Villages,red,Gamay,2021
+16,Morgon Cote du Py,Jean Foillard,France,Beaujolais,Morgon,red,Gamay,2020
+17,Fleurie,Clos de la Roilette,France,Beaujolais,Fleurie,red,Gamay,2020
+18,Bourgogne Rouge,Michel Lafarge,France,Burgundy,Bourgogne Rouge,red,Pinot Noir,2019
+19,Willamette Pinot Noir,Big Table Farm,USA,Oregon,Willamette Valley,red,Pinot Noir,2019
+20,Central Otago Pinot Noir,Rippon,New Zealand,South Island,Central Otago,red,Pinot Noir,2020
+21,Naoussa Young Vines,Thymiopoulos,Greece,Naoussa,Naoussa,red,Xinomavro,2020
+22,Nemea Agiorgitiko,Skouras,Greece,Peloponnese,Nemea,red,Agiorgitiko,2019
+23,Santorini Assyrtiko,Sigalas,Greece,Santorini,Santorini,white,Assyrtiko,2021
+24,Moschofilero Mantinia,Tselepos,Greece,Peloponnese,Mantinia,white,Moschofilero,2021
+25,Chablis,Vincent Dauvissat,France,Burgundy,Chablis,white,Chardonnay,2020
+26,Bourgogne Blanc,Coche Dury,France,Burgundy,Bourgogne Blanc,white,Chardonnay,2019
+27,California Chardonnay Reserve,Ramey,USA,California,Sonoma,white,Chardonnay,2019
+28,Marlborough Sauvignon Blanc,Cloudy Bay,New Zealand,South Island,Marlborough,white,Sauvignon Blanc,2021
+29,Riesling Kabinett,Dr Loosen,Germany,Mosel,Mosel,white,Riesling,2020
+30,Albarino,Rodriguez de Vera,Spain,Galicia,Rias Baixas,white,Albarino,2021
+31,Vinho Verde,Anselmo Mendes,Portugal,Minho,Vinho Verde,white,Trajadura Blend,2021
+32,Soave Classico,Pieropan,Italy,Veneto,Soave Classico,white,Garganega,2020
+33,Verdicchio dei Castelli di Jesi,Bucci,Italy,Marche,Verdicchio dei Castelli di Jesi,white,Verdicchio,2020
+34,Cotes du Rhone Rouge,Guigal,France,Rhone,Cotes du Rhone,red,GSM Blend,2019
+35,Rioja Reserva,La Rioja Alta,Spain,Rioja,Rioja Reserva,red,Tempranillo,2016
+36,Malbec Mendoza,Catena Zapata,Argentina,Mendoza,Mendoza,red,Malbec,2019
+37,Napa Valley Cabernet Sauvignon,Caymus,USA,California,Napa Valley,red,Cabernet Sauvignon,2018
+38,Chianti Colli Senesi,Felsina,Italy,Tuscany,Chianti Colli Senesi,red,Sangiovese,2020
+39,Rose de Provence,Domaines Ott,France,Provence,Cotes de Provence,rose,Grenache Blend,2021
+40,Orange Wine Skin Contact,Radikon,Italy,Friuli Venezia Giulia,Venezia Giulia,orange,Ribolla Gialla,2017
