@@ -1,4 +1,9 @@
-# api.py
+""""Modified Wine Recommender API with unified success and error wrappers.
+
+This module wraps every successful response in a consistent structure and registers
+global exception handlers to ensure all errors conform to a single JSON schema.
+Use this file as a reference implementation for updating the existing `api.py`.
+"""
 
 import base64
 import os
@@ -6,8 +11,13 @@ import tempfile
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+# Import CORS origins from settings
+from settings import CORS_ORIGINS
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from taste_survey import build_style_embedding_from_survey
@@ -25,6 +35,7 @@ from profile_store import (
     add_tasting,
     normalize_wine_id,
 )
+
 
 # =========================
 # Pydantic models
@@ -68,106 +79,143 @@ class TastingBody(BaseModel):
 
 app = FastAPI(title="Wine Recommender API", version="0.1.0")
 
-# For local dev + simulator / device HTTP calls
+# Configure CORS (lock this down via env var in production)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # lock this down later
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+# =========================
+# Response helper and exception handlers
+# =========================
+
+def ok(data: Any) -> Dict[str, Any]:
+    """Wrap successful responses in a consistent envelope."""
+    return {"status": "ok", "data": data}
+
+
+class APIException(Exception):
+    """Custom exception to produce structured error responses."""
+
+    def __init__(self, code: int, message: str):
+        self.code = code
+        self.message = message
+
+
+@app.exception_handler(APIException)
+async def api_exception_handler(request: Request, exc: APIException) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.code,
+        content={"error": {"code": exc.code, "message": exc.message}},
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.status_code, "message": exc.detail}},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "code": 422,
+                "message": "Validation error",
+                "details": exc.errors(),
+            }
+        },
+    )
+
+
 # =========================
 # Helpers
 # =========================
 
+
 def _require_user_vec(user: Dict[str, Any]) -> np.ndarray:
     user_vec_list = user.get("user_vec")
     if not user_vec_list:
-        raise HTTPException(
-            status_code=400,
-            detail="User flavor vector is empty. Complete the survey and/or add some favorite wines first.",
+        raise APIException(
+            400,
+            "User flavor vector is empty. Complete the survey and/or add some favorite wines first.",
         )
     user_vec = np.array(user_vec_list, dtype=np.float32)
     if np.linalg.norm(user_vec) == 0:
-        raise HTTPException(
-            status_code=400,
-            detail="User flavor vector has zero norm. Something went wrong in profile computation.",
-        )
+        raise APIException(400, "User flavor vector has zero norm. Something went wrong in profile computation.")
     return user_vec
+
 
 # =========================
 # Endpoints
 # =========================
 
+
 @app.get("/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok"}
+def health() -> Dict[str, Any]:
+    return ok({"status": "ok"})
 
 
 @app.get("/user/{user_id}")
 def get_user(user_id: str) -> Dict[str, Any]:
-    """
-    Fetch the raw user profile JSON.
-    """
+    """Fetch the raw user profile JSON and wrap it in our success envelope."""
     user = load_user_profile(user_id)
-    return user
+    return ok({"user": user})
 
 
 @app.post("/user/{user_id}/survey")
 def update_survey(user_id: str, answers: SurveyAnswers) -> Dict[str, Any]:
-    """
-    Store survey answers and recompute user_vec.
-    """
+    """Store survey answers and recompute user_vec."""
     survey_dict = answers.model_dump()
     user = set_survey_for_user(user_id, survey_dict)
-    return {"status": "ok", "user": user}
+    return ok({"user": user})
 
 
 @app.post("/user/{user_id}/favorite/by-name")
 def add_favorite_text(user_id: str, body: AddFavoriteByNameBody) -> Dict[str, Any]:
-    """
-    Add a favorite wine by text name (user types a bottle they liked).
-    """
+    """Add a favorite wine by text name (user types a bottle they liked)."""
+    if not body.wine_name.strip():
+        raise APIException(400, "wine_name must not be empty")
     user = add_favorite_wine_by_name(user_id, body.wine_name)
-    return {"status": "ok", "user": user}
+    return ok({"user": user})
 
 
 @app.post("/user/{user_id}/favorite/from-photo")
 def add_favorite_photo(user_id: str, body: PhotoBody) -> Dict[str, Any]:
-    """
-    Add a favorite wine from a bottle/label photo.
-    iOS: pick/take photo → base64 → POST here.
-    """
+    """Add a favorite wine from a bottle/label photo."""
     try:
         image_bytes = base64.b64decode(body.image_base64)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid base64 image")
+        raise APIException(400, "Invalid base64 image")
 
     # 1) Use GPT-4.1 Vision to identify the wine and build a profile
     profile = fetch_wine_profile_from_image(image_bytes)
 
-    # ✅ NEW: attach the raw image to the profile we pass downstream
+    # attach the raw image to the profile we pass downstream
     profile["image_base64"] = body.image_base64
     profile["source"] = "photo"
 
     # 2) Persist as favorite and recompute user_vec
     user = add_favorite_wine_from_profile(user_id, profile)
 
-    return {
-        "status": "ok",
-        "wine_profile": profile,
-        "user": user,
-    }
-
+    return ok({"wine_profile": profile, "user": user})
 
 
 @app.post("/user/{user_id}/tasting")
 def add_tasting_event(user_id: str, body: TastingBody) -> Dict[str, Any]:
-    """
-    After-dinner flow: user rates a specific wine they had.
-    wine_id should be one of the IDs stored in wines_db.
-    """
+    """After-dinner flow: user rates a specific wine they had."""
+    if not body.wine_id:
+        raise APIException(400, "wine_id is required")
     user = add_tasting(
         user_id=user_id,
         wine_id=body.wine_id,
@@ -175,15 +223,12 @@ def add_tasting_event(user_id: str, body: TastingBody) -> Dict[str, Any]:
         context=body.context,
         notes=body.notes,
     )
-    return {"status": "ok", "user": user}
+    return ok({"user": user})
 
 
 @app.post("/user/{user_id}/menu/pdf")
 def recommend_from_menu_pdf(user_id: str, body: MenuPdfBody) -> Dict[str, Any]:
-    """
-    Main restaurant flow: upload a menu PDF, get ranked recommendations.
-    Client sends the PDF as base64-encoded bytes.
-    """
+    """Main restaurant flow: upload a menu PDF, get ranked recommendations."""
     user = load_user_profile(user_id)
     user_vec = _require_user_vec(user)
 
@@ -191,7 +236,7 @@ def recommend_from_menu_pdf(user_id: str, body: MenuPdfBody) -> Dict[str, Any]:
     try:
         pdf_bytes = base64.b64decode(body.pdf_base64)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid base64 PDF")
+        raise APIException(400, "Invalid base64 PDF")
 
     tmp_path: Optional[str] = None
     try:
@@ -202,7 +247,7 @@ def recommend_from_menu_pdf(user_id: str, body: MenuPdfBody) -> Dict[str, Any]:
         # Extract wines from menu
         menu_wines = call_gpt41_extract_wines(tmp_path)
         if not menu_wines:
-            raise HTTPException(status_code=400, detail="No wines extracted from menu")
+            raise APIException(400, "No wines extracted from menu")
 
         # Score wines
         results = score_menu_for_user(user_vec, menu_wines)
@@ -216,10 +261,8 @@ def recommend_from_menu_pdf(user_id: str, body: MenuPdfBody) -> Dict[str, Any]:
             name = w.get("name") or "Unknown wine"
             vintage = w.get("vintage") or ""
             region = w.get("region") or ""
-
             raw_id = f"{name} {vintage} {region}"
             wine_id = normalize_wine_id(raw_id)
-
             emb_text = build_menu_wine_embedding_text(w)
             emb = get_embedding(emb_text)
 
@@ -234,11 +277,8 @@ def recommend_from_menu_pdf(user_id: str, body: MenuPdfBody) -> Dict[str, Any]:
                 "grapes": w.get("grapes") or [],
                 "embedding_text": emb_text,
                 "embedding": emb.tolist(),
-                # placeholder for now; later you can actually fetch a real label image
                 "image_url": w.get("image_url") or default_image_for_color(w.get("color")),
-
             }
-
 
             # Label to show client
             label_parts = [name]
@@ -249,13 +289,7 @@ def recommend_from_menu_pdf(user_id: str, body: MenuPdfBody) -> Dict[str, Any]:
             if w.get("price_string"):
                 label_parts.append(f"({w['price_string']})")
             label = " ".join(label_parts)
-
-            session_menu_wines.append(
-                {
-                    "wine_id": wine_id,
-                    "label": label,
-                }
-            )
+            session_menu_wines.append({"wine_id": wine_id, "label": label})
 
         save_wines_db(wines_db)
 
@@ -269,11 +303,7 @@ def recommend_from_menu_pdf(user_id: str, body: MenuPdfBody) -> Dict[str, Any]:
             for r in results
         ]
 
-        return {
-            "status": "ok",
-            "results": cleaned_results,
-            "menu_wines": session_menu_wines,
-        }
+        return ok({"results": cleaned_results, "menu_wines": session_menu_wines})
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -287,22 +317,19 @@ def get_wine_detail(wine_id: str) -> Dict[str, Any]:
     wines_db = load_wines_db()
     wine = wines_db.get(wine_id)
     if wine is None:
-        raise HTTPException(status_code=404, detail=f"Wine not found: {wine_id}")
+        raise APIException(404, f"Wine not found: {wine_id}")
     wine_copy = dict(wine)
     wine_copy.pop("embedding", None)
-    return wine_copy
-
+    return ok({"wine": wine_copy})
 
 
 @app.get("/wine/{wine_id}/similar")
-def similar_wines(wine_id: str, top_k: int = 5):
+def similar_wines(wine_id: str, top_k: int = 5) -> Dict[str, Any]:
     wines = load_wines_db()
     if wine_id not in wines:
-        raise HTTPException(status_code=404, detail="Wine not found")
-
+        raise APIException(404, "Wine not found")
     target = np.array(wines[wine_id]["embedding"], dtype=np.float32)
     target_norm = target / (np.linalg.norm(target) + 1e-10)
-
     scored = []
     for w_id, w in wines.items():
         if w_id == wine_id:
@@ -311,11 +338,9 @@ def similar_wines(wine_id: str, top_k: int = 5):
         emb_norm = emb / (np.linalg.norm(emb) + 1e-10)
         score = float(np.dot(target_norm, emb_norm))
         scored.append((score, w))
-
     scored.sort(key=lambda x: x[0], reverse=True)
-    top = scored[:top_k]
-
-    return {
+    top = scored[: top_k]
+    payload = {
         "wine_id": wine_id,
         "similar": [
             {
@@ -323,26 +348,27 @@ def similar_wines(wine_id: str, top_k: int = 5):
                 "name": item["name"],
                 "producer": item.get("producer"),
                 "region": item.get("region"),
-                "score": score
+                "score": score,
             }
             for score, item in top
-        ]
+        ],
     }
+    return ok(payload)
 
+
+# Additional imports used below
 from collections import Counter
 from typing import Tuple
-# ... existing imports ...
+
 
 def _collect_wine_stats_for_user(user: Dict[str, Any]) -> Dict[str, Any]:
     wines_db = load_wines_db()
     favorites = user.get("favorite_wines", []) or []
     tastings = user.get("tastings", []) or []
-
     grape_counter = Counter()
     country_counter = Counter()
     region_counter = Counter()
     color_counter = Counter()
-
     # Count favorites
     for fav in favorites:
         wine_id = fav.get("wine_id")
@@ -357,28 +383,31 @@ def _collect_wine_stats_for_user(user: Dict[str, Any]) -> Dict[str, Any]:
             region_counter[wine["region"]] += 1
         if wine.get("color"):
             color_counter[wine["color"]] += 1
-
-    # You could also weight by tastings/rating later if you want
     stats = {
         "total_favorites": len(favorites),
         "total_tastings": len(tastings),
-        "top_grapes": [{"name": g, "count": c} for g, c in grape_counter.most_common(5)],
-        "top_countries": [{"name": c, "count": n} for c, n in country_counter.most_common(5)],
-        "top_regions": [{"name": r, "count": n} for r, n in region_counter.most_common(5)],
-        "top_colors": [{"name": col, "count": n} for col, n in color_counter.most_common(3)],
+        "top_grapes": [
+            {"name": g, "count": c} for g, c in grape_counter.most_common(5)
+        ],
+        "top_countries": [
+            {"name": c, "count": n} for c, n in country_counter.most_common(5)
+        ],
+        "top_regions": [
+            {"name": r, "count": n} for r, n in region_counter.most_common(5)
+        ],
+        "top_colors": [
+            {"name": col, "count": n} for col, n in color_counter.most_common(3)
+        ],
     }
     return stats
 
 
 def _build_text_summary(user: Dict[str, Any], stats: Dict[str, Any]) -> str:
     survey = user.get("survey_answers") or {}
-
     styles = survey.get("favorite_styles") or []
     tannin_pref = survey.get("tannin_pref")
     acidity_pref = survey.get("acidity_pref")
     oak_pref = survey.get("oak_pref")
-
-    # Very simple heuristic mapping
     style_phrases = []
     if any("light" in s for s in styles):
         style_phrases.append("light to medium-bodied reds")
@@ -386,7 +415,6 @@ def _build_text_summary(user: Dict[str, Any], stats: Dict[str, Any]) -> str:
         style_phrases.append("medium-bodied reds")
     if any("crisp_white" in s for s in styles):
         style_phrases.append("crisp, refreshing whites")
-
     tannin_phrase = None
     if tannin_pref == "low":
         tannin_phrase = "low tannin"
@@ -394,7 +422,6 @@ def _build_text_summary(user: Dict[str, Any], stats: Dict[str, Any]) -> str:
         tannin_phrase = "medium tannin"
     elif tannin_pref == "high":
         tannin_phrase = "firm tannin"
-
     acidity_phrase = None
     if acidity_pref == "low":
         acidity_phrase = "softer acidity"
@@ -402,7 +429,6 @@ def _build_text_summary(user: Dict[str, Any], stats: Dict[str, Any]) -> str:
         acidity_phrase = "balanced acidity"
     elif acidity_pref == "high":
         acidity_phrase = "bright, high acidity"
-
     oak_phrase = None
     if oak_pref == "low":
         oak_phrase = "minimal oak influence"
@@ -410,65 +436,51 @@ def _build_text_summary(user: Dict[str, Any], stats: Dict[str, Any]) -> str:
         oak_phrase = "some oak complexity"
     elif oak_pref == "high":
         oak_phrase = "noticeable oak and toast"
-
-    parts = []
-
+    parts: List[str] = []
     if style_phrases:
         parts.append(f"You gravitate toward {', and '.join(style_phrases)}.")
     else:
         parts.append("Your wine preferences are still taking shape.")
-
     profile_bits = [p for p in [tannin_phrase, acidity_phrase, oak_phrase] if p]
     if profile_bits:
         parts.append("You tend to prefer wines with " + ", ".join(profile_bits) + ".")
-
     top_grapes = stats.get("top_grapes") or []
     if top_grapes:
         grape_names = [g["name"] for g in top_grapes[:3]]
         parts.append("Your favorite grapes so far include " + ", ".join(grape_names) + ".")
-
     top_countries = stats.get("top_countries") or []
     if top_countries:
         country_names = [c["name"] for c in top_countries[:3]]
         parts.append("You’re especially drawn to wines from " + ", ".join(country_names) + ".")
-
     return " ".join(parts)
 
 
 @app.get("/user/{user_id}/summary")
 def get_user_summary(user_id: str) -> Dict[str, Any]:
-    """
-    High-level taste summary + basic stats for a user.
-    """
+    """High-level taste summary + basic stats for a user."""
     user = load_user_profile(user_id)
     stats = _collect_wine_stats_for_user(user)
     summary_text = _build_text_summary(user, stats)
+    return ok({"user_id": user_id, "summary_text": summary_text, "stats": stats})
 
-    return {
-        "user_id": user_id,
-        "summary_text": summary_text,
-        "stats": stats,
-    }
 
-from typing import Any, Dict, List, Optional
+# Re-imports for models used below
 from pydantic import BaseModel
-from collections import Counter
 
-# ...your other imports and models...
-from typing import List, Optional
-from pydantic import BaseModel
 
 class WineSearchResult(BaseModel):
     wine_id: str
     name: str
     producer: Optional[str] = None
+
+
 class ResolveWineNameBody(BaseModel):
     wine_name: str
 
 
 class WineProfileBody(BaseModel):
     profile: Dict[str, Any]
-from collections import Counter
+
 
 class UserInsights(BaseModel):
     summary: str
@@ -477,15 +489,14 @@ class UserInsights(BaseModel):
     top_regions: List[str]
     top_vintages: List[int]
 
+
 @app.get("/wine_search", response_model=List[WineSearchResult])
-def search_wines(q: str) -> List[WineSearchResult]:
+def search_wines(q: str) -> Dict[str, Any]:
     q_norm = q.strip().lower()
     if not q_norm:
-        return []
-
+        return ok({"results": []})
     wines_db = load_wines_db()
     matches: List[WineSearchResult] = []
-
     for wine_id, wine in wines_db.items():
         name = (wine.get("name") or "").strip()
         producer = (wine.get("producer") or "").strip()
@@ -498,34 +509,30 @@ def search_wines(q: str) -> List[WineSearchResult]:
                     producer=producer or None,
                 )
             )
+    # Return the Pydantic models as dicts under our envelope
+    return ok({"results": [m.dict() for m in matches[:25]]})
 
-    return matches[:25]
+
 from user_profile import fetch_wine_profile_from_gpt
-from profile_store import add_favorite_wine_from_profile
+
 
 @app.post("/wine/resolve-text")
 def resolve_wine_text(body: ResolveWineNameBody) -> Dict[str, Any]:
-    """
-    Use GPT to resolve a free-text wine name into a structured profile,
-    but DO NOT save anything yet. This is for the confirmation step.
-    """
+    """Use GPT to resolve a free-text wine name into a structured profile."""
+    if not body.wine_name.strip():
+        raise APIException(400, "wine_name must not be empty")
     profile = fetch_wine_profile_from_gpt(body.wine_name)
+    return ok({"profile": profile})
 
-    # Optional: if GPT indicates not_found, you could return 404 later
-    # if profile.get("not_found"):
-    #     raise HTTPException(status_code=404, detail="Wine not found")
 
-    return {"status": "ok", "profile": profile}
 @app.post("/user/{user_id}/favorite/from-profile")
 def add_favorite_from_profile_endpoint(
     user_id: str, body: WineProfileBody
 ) -> Dict[str, Any]:
-    """
-    After the user confirms a resolved wine profile, persist it as a favorite
-    and recompute their taste vector.
-    """
+    """After the user confirms a resolved wine profile, persist it as a favorite."""
     user = add_favorite_wine_from_profile(user_id, body.profile)
-    return {"status": "ok", "user": user}
+    return ok({"user": user})
+
 
 def default_image_for_color(color: Optional[str]) -> Optional[str]:
     if not color:
@@ -537,18 +544,17 @@ def default_image_for_color(color: Optional[str]) -> Optional[str]:
         return "https://example.com/white-bottle-placeholder.png"
     # etc.
     return None
+
+
 def _compute_user_insights(user_id: str) -> UserInsights:
     user = load_user_profile(user_id)
     wines_db = load_wines_db()
-
     favorites = user.get("favorite_wines") or user.get("favorites") or []
     survey = user.get("survey_answers") or {}
-
     grape_counts = Counter()
     country_counts = Counter()
     region_counts = Counter()
     vintage_counts = Counter()
-
     for fav in favorites:
         wine_id = fav.get("wine_id")
         if not wine_id:
@@ -556,19 +562,15 @@ def _compute_user_insights(user_id: str) -> UserInsights:
         wine = wines_db.get(wine_id)
         if not wine:
             continue
-
         grapes = wine.get("grapes") or []
         for g in grapes:
             grape_counts[g.strip()] += 1
-
         country = (wine.get("country") or "").strip()
         if country:
             country_counts[country] += 1
-
         region = (wine.get("region") or "").strip()
         if region:
             region_counts[region] += 1
-
         # crude vintage parse from name
         name = wine.get("name") or ""
         for token in name.split():
@@ -579,49 +581,49 @@ def _compute_user_insights(user_id: str) -> UserInsights:
                         vintage_counts[year] += 1
                 except ValueError:
                     pass
-
     def top_keys(counter: Counter, n: int = 5):
         return [k for k, _ in counter.most_common(n)]
-
     top_grapes = top_keys(grape_counts)
     top_countries = top_keys(country_counts)
     top_regions = top_keys(region_counts)
     top_vintages = top_keys(vintage_counts)
-
-    # Build a simple textual summary
     tannin = survey.get("tannin_pref", "").lower() or "unknown"
     acidity = survey.get("acidity_pref", "").lower() or "unknown"
     oak = survey.get("oak_pref", "").lower() or "unknown"
     adventure = survey.get("adventure_pref", "").lower() or "unknown"
     styles = survey.get("favorite_styles") or []
-
-    style_bits = []
+    style_bits: List[str] = []
     if styles:
         style_bits.append(", ".join(styles).replace("_", " "))
-
-    parts = []
-
+    parts: List[str] = []
     if styles:
-        parts.append(f"You tend to enjoy: {', '.join(s.replace('_', ' ') for s in styles)}.")
-    parts.append(f"Your palate leans toward {tannin} tannin, {acidity} acidity, and {oak} oak.")
+        parts.append(
+            f"You tend to enjoy: {', '.join(s.replace('_', ' ') for s in styles)}."
+        )
+    parts.append(
+        f"Your palate leans toward {tannin} tannin, {acidity} acidity, and {oak} oak."
+    )
     parts.append(f"You're generally {adventure} on trying new styles.")
-
     if top_grapes:
         parts.append("You keep coming back to grapes like " + ", ".join(top_grapes) + ".")
     if top_countries:
-        parts.append("Most of your favorites are from " + ", ".join(top_countries) + ".")
+        parts.append(
+            "Most of your favorites are from " + ", ".join(top_countries) + "."
+        )
     if top_regions:
-        parts.append("Regions that show up a lot for you: " + ", ".join(top_regions) + ".")
+        parts.append(
+            "Regions that show up a lot for you: " + ", ".join(top_regions) + "."
+        )
     if top_vintages:
         min_v = min(top_vintages)
         max_v = max(top_vintages)
         if min_v == max_v:
             parts.append(f"Your wines skew toward the {max_v} vintage.")
         else:
-            parts.append(f"Your wines skew toward vintages {min_v}–{max_v}.")
-
+            parts.append(
+                f"Your wines skew toward vintages {min_v}–{max_v}."
+            )
     summary = " ".join(parts)
-
     return UserInsights(
         summary=summary,
         top_grapes=top_grapes,
@@ -629,6 +631,9 @@ def _compute_user_insights(user_id: str) -> UserInsights:
         top_regions=top_regions,
         top_vintages=top_vintages,
     )
+
+
 @app.get("/user/{user_id}/insights", response_model=UserInsights)
-def get_user_insights(user_id: str) -> UserInsights:
-    return _compute_user_insights(user_id)
+def get_user_insights(user_id: str) -> Dict[str, Any]:
+    insights = _compute_user_insights(user_id)
+    return ok(insights.model_dump())
